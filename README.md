@@ -1,31 +1,27 @@
-# 🏛️ Backend Reverse Synthesis (`backend-reverse-synthesis`)
+# 🏛️ Backend Reverse Synthesis (`backend-reverse-synthesis` v2.0)
 
-> **Protocolo determinista (Cero Adivinación / Cero Ceguera) para la recreación de backends a partir de código cliente extraído con REA v7.0.0 y REPLICA.**
+> **Protocolo determinista e inter-procedural (Cero Adivinación / Cero Ceguera) para la recreación de backends a partir de código cliente extraído con REA v7.0.0 y REPLICA.**
 
 ---
 
-## 💡 ¿Por Qué se Creó este Skill?
+## 💡 ¿Por Qué se Creó este Skill y Cómo Evolucionó a v2.0?
 
 Cuando auditamos, rescatamos o reconstruimos aplicaciones cuyo servidor original ya no existe o es inaccesible, herramientas como **REA v7.0.0** (`inspect_sourcemap`, `analyze_javascript` sobre Electron `.asar`, `rea strings`, `inspect_android`, `inspect_capture`) y **REPLICA** (`replica-recon` / `replica coderecon`) nos permiten recuperar el código del cliente (SPA, PWA, bundles JS, aplicaciones móviles o de escritorio).
 
-Sin embargo, durante la reconstrucción real de un sistema POS completo a partir de su frontend extraído, quedó en evidencia un **defecto crítico en la forma en que los agentes de IA abordan la recreación de un backend**:
+Sin embargo, durante la reconstrucción real de un sistema POS completo a partir de su frontend extraído, quedaron en evidencia **dos generaciones de defectos críticos** cuando un agente intenta recrear un backend:
 
-### ❌ El Problema: La Trampa de "Reinterpretar y Adivinar"
-Cuando un agente lee superficialmente las llamadas del cliente (`fetch`, `P.api`, `axios`) e intenta **adivinar o reinterpretar heurísticamente** qué debe responder el servidor:
-1. **Sufre de Ceguera de Rutas Compuestas**: Ve las rutas estáticas obvias (`/api/clientes/`), pero ignora rutas construidas dinámicamente mediante prefijos (`URL_BASE + "estado/"`), operadores ternarios o concatenación de IDs (`"/api/ventas/" + v.id + "/productos/" + p.id + "/anular/"`).
-2. **Sufre de Ceguera en Filtros Relacionales Silenciosos**: El servidor devuelve sucursales como `{ id: 1, nombre: "Norte" }`, pero el frontend ejecuta silenciosamente:
-   ```javascript
-   D.sucursales.filter(function(s) { return Number(s.empresa_id) === Number(empresaId); });
-   ```
-   Como el backend omitió `empresa_id: 23`, la comparación evalúa `NaN === 23` (`false`) y **deja los selectores (`<select>`) vacíos sin arrojar un solo error en consola ni en red**.
-3. **Adivina Tipos de Colección Incorrectos**: El servidor devuelve `roles: ["Dueño", "Cajero"]` pensando que es una lista de nombres, mientras que el combobox del cliente itera buscando `r.id`, `r.nombre` y `r.es_dueno_empresa`, renderizando opciones en blanco.
-4. **Adivina Nombres de Llaves JSON**: El servidor devuelve `{ ok: true, data: [...] }`, pero el cliente espera `{ ok: true, proveedores: [...], siguiente_codigo: "PRV-0002" }`, rompiendo el alta de registros.
-5. **Ignora el Polimorfismo de Guardado/Borrado y `FormData`**: Muchos clientes envían `{ id, eliminar: true }` al mismo endpoint `/guardar/` o alternan entre `application/json` y `multipart/form-data`.
+### ❌ Generación 1: La Trampa de "Reinterpretar y Adivinar" (Resuelta en v1.0)
+1. **Ceguera de Rutas Compuestas**: Ve las rutas estáticas obvias (`/api/clientes/`), pero ignora rutas construidas dinámicamente mediante prefijos (`URL_BASE + "estado/"`), operadores ternarios o concatenación de IDs (`"/api/ventas/" + v.id + "/productos/" + p.id + "/anular/"`).
+2. **Ceguera en Filtros Relacionales Silenciosos**: El servidor devuelve sucursales como `{ id: 1, nombre: "Norte" }`, pero el frontend ejecuta `D.sucursales.filter(s => Number(s.empresa_id) === Number(empresaId))`, dejando los `<select>` vacíos sin arrojar errores.
+3. **Colisión Primitivo vs. Objeto**: El servidor devuelve `roles: ["Dueño", "Cajero"]` cuando el cliente itera buscando `r.id`, `r.nombre` y `r.es_dueno_empresa`.
+4. **Adivinación de Llaves JSON y Polimorfismo**: El servidor devuelve `{ ok: true, data: [...] }` cuando el cliente espera `proveedores` y `siguiente_codigo`, o ignora `{ id, eliminar: true }` en endpoints `/guardar/`.
 
-### ✅ La Solución: Síntesis Determinista Guiada por el Contrato del Cliente
-Este skill se creó para prohibir la adivinación heurística y sustituirla por un **pipeline determinista de 5 fases** respaldado por análisis estático automatizado ([`scripts/audit_api_contracts.py`](scripts/audit_api_contracts.py)):
-- **El código cliente extraído con REA/REPLICA no se "reinterpreta": se compila como una especificación formal.**
-- Cada ruta, cada propiedad leída en `.then(function(r) { ... })` y cada predicado `.filter(function(x) { ... })` se extrae automáticamente y se contrasta contra el servidor hasta lograr **100% de paridad verificada**.
+### ❌ Generación 2: Ceguera Inter-Procedural, Compuertas de Permisos e Inversión MIME (Resuelta en v2.0)
+Incluso con el 100% de las rutas creadas y respondiendo `HTTP 200`, la primera versión del auditor dejó pasar cuatro patrones que inutilizaron por completo el módulo `#configuracion`:
+1. **Compuertas de Permisos Vacías (`permisos: {}`)**: El despachador `abrir(item)` evaluaba `if (!estado.permisos[item.clave]) return C.post("/api/configuracion/permiso/", ...)`. Al devolver `permisos: {}` y `200 OK` en `/permiso/`, los **16 botones del módulo no hacían absolutamente nada al hacer clic**.
+2. **Indirección de Promesas y Estado Compartido**: El auditor v1.0 solo leía `.then(function(d) { ... })` anónimos inline, reportando `(sin lectura directa)` cuando el frontend usaba callbacks nombrados (`.then(abrirEditor)`, `.then(abrirVentana)`) o cuando guardaba `C._estado = d` y lo pasaba a submódulos en otros archivos (`V.empresa = function(estado)`), ocultando sub-propiedades de 2do nivel (`limite.sucursales_disponibles`, `categorias[].parent_id`, `categorias[].ruta`).
+3. **Inversión Semántica MIME en Descargas (`C.descargar`)**: El wrapper `C.descargar()` verifica `if (!r.ok || tipo.indexOf("application/json") >= 0) throw Error(...)`. Devolver `200 OK` con `c.json({ ok: true })` pasaba un test básico de código HTTP, pero el cliente lo interpretaba como un fallo de negocio por ser JSON en lugar de un archivo descargable (`text/csv`, `text/html`, `application/octet-stream`).
+4. **Botones Huérfanos (`sinPantalla: true`) y Stubs Sin Persistencia**: Botones marcados con `sinPantalla: true` (`Moneda`, `Cliente por defecto`, `Etiqueta`) o endpoints `POST` que no persistían en SQLite daban la ilusión de que la interfaz estaba rota.
 
 ---
 
@@ -33,17 +29,17 @@ Este skill se creó para prohibir la adivinación heurística y sustituirla por 
 
 ```text
 backend-reverse-synthesis/
-├── SKILL.md                         # Instrucciones operativas del Skill para Antigravity / Claude Code
+├── SKILL.md                         # Instrucciones operativas v2.0 del Skill (10 Anti-Patrones + 5 Fases)
 ├── README.md                        # Documentación general y guía rápida
 ├── docs/
-│   └── ORIGEN_Y_CASO_DE_ESTUDIO.md  # Análisis forense detallado de los fallos que dieron origen al Skill
+│   └── ORIGEN_Y_CASO_DE_ESTUDIO.md  # Análisis forense detallado de los Casos A–H que dieron origen al Skill
 └── scripts/
-    └── audit_api_contracts.py       # Auditor estático determinista (Frontend vs. Backend)
+    └── audit_api_contracts.py       # Auditor estático inter-procedural v2.0 (Frontend vs. Backend)
 ```
 
 ---
 
-## 🚀 Uso Rápido del Auditor Determinista
+## 🚀 Uso Rápido del Auditor Determinista v2.0
 
 ```bash
 python3 scripts/audit_api_contracts.py \
@@ -51,44 +47,28 @@ python3 scripts/audit_api_contracts.py \
   --server /ruta/al/servidor/reconstruido.js
 ```
 
-### Ejemplo de Salida Real (100% Paridad)
+### Ejemplo de Salida Real v2.0 (100% Paridad Determinista)
 ```text
-================================================================================
-🔬 AUDITORÍA DETERMINISTA DE CONTRATOS API (ZERO-GUESSING PROTOCOL)
-================================================================================
-Rutas API únicas en Frontend : 77
-Rutas API registradas Server : 89
---------------------------------------------------------------------------------
-  [OK]      GET      /api/admin/sucursales/                        | Props: sucursales | admin_usuario.js:844
-  [OK]      GET      /api/caja/ventas/                             | Props: puede_anular, ventas | caja.js:28, caja_modales.js:241
-  [OK]      GET      /api/clientes/                                | Props: siguiente_codigo | cliente.js:38
-  [OK]      GET/POST /api/compras/pedidos/                         | Props: pedido, pedidos, productos | compras.js:30, compras.js:413
-  [OK]      POST     /api/configuracion/bajas/registrar/           | Props: mensaje, stock, titulo | configuracion_ventas.js:93
+==========================================================================================
+🔬 AUDITORÍA DETERMINISTA DE CONTRATOS API v2.0 (ZERO-GUESSING PROTOCOL)
+==========================================================================================
+Rutas API únicas en Frontend       : 78
+Rutas API registradas en Servidor  : 90
+Claves de Permiso (config_*)       : 18 detectadas
+Rutas de Descarga Binaria/Archivo  : 4 detectadas
+------------------------------------------------------------------------------------------
+  [OK]      ALL      /api/configuracion/catalogo/generar/ [DOWNLOAD]  | Props: nombre, total | configuracion_general.js:467
+  [OK]      GET      /api/configuracion/eliminar/estado/              | Props: compartidas_empresa, modo, tablas, tablas[].descripcion, tablas[].icono, tablas[].nombre, tablas[].tabla | configuracion_eliminar.js:79
+  [OK]      GET      /api/configuracion/factura/                      | Props: config, sucursales | configuracion_ventas.js:349
+  [OK]      GET      /api/configuracion/general/estado/               | Props: categorias, categorias[].parent_id, empresa, empresa.nombre, es_dueno, limite, limite.max_sucursales, limite.sucursales_disponibles, limite.sucursales_usadas, permisos, sucursal_sesion, sucursales, tipos_identificacion | configuracion.js:96
 ...
---------------------------------------------------------------------------------
-📊 Cobertura de Rutas: 77/77 (100.0%)
+------------------------------------------------------------------------------------------
+📊 Cobertura de Rutas: 78/78 (100.0%)
 
-🔗 INVARIANTES DE FILTRADO RELACIONAL DETECTADOS EN FRONTEND (.filter):
-  • admin_usuario.js: s.empresa_id
-  • caja.js: s.activa
-  • caja.js: s.empresa_id
-  • cliente.js: s.activa
-
-🏆 PARIDAD DE RUTAS AL 100%: Ninguna llamada del frontend carece de endpoint.
+🏆 PARIDAD DETERMINISTA AL 100%: Rutas, propiedades anidadas, permisos, descargas y botones verificados.
 ```
 
 ---
 
-## 🔗 Integración con REA v7.0.0 y REPLICA
-
-1. **Extracción Forense (`rea-reverse-engineering` / `replica-recon`)**:
-   - Extrae sourcemaps, bundles JS, paquetes Electron `.asar` o APKs con `rea` / `replica coderecon`.
-2. **Síntesis Determinista (`backend-reverse-synthesis`)**:
-   - Ejecuta `audit_api_contracts.py` sobre el código extraído, construye los serializadores canónicos respetando los invariantes `.filter()` y el bootstrap HTML, y verifica `0 [MISSING]` antes de desplegar.
-3. **Pruebas E2E (`replica-test`)**:
-   - Valida todos los flujos de usuario con sesión real contra el backend reconstruido.
-
----
-
 ## 📄 Documentación Adicional
-Consulta [`docs/ORIGEN_Y_CASO_DE_ESTUDIO.md`](docs/ORIGEN_Y_CASO_DE_ESTUDIO.md) para ver el desglose técnico completo de los patrones de ceguera y adivinación detectados durante la reconstrucción de un sistema POS real y cómo este protocolo los resuelve de forma definitiva.
+Consulta [`docs/ORIGEN_Y_CASO_DE_ESTUDIO.md`](docs/ORIGEN_Y_CASO_DE_ESTUDIO.md) para ver el desglose técnico completo de los casos de estudio reales (Casos A–H) y cómo este protocolo v2.0 los previene de forma determinista.
