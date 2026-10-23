@@ -1,88 +1,106 @@
 ---
 name: backend-reverse-synthesis
-description: Protocolo determinista (Cero Adivinación) para reconstruir backends completos, esquemas SQL y contratos API a partir de código cliente huérfano (SPA, PWA, Electron ASAR, APK, Sourcemaps) extraído con REA v7.0.0 o Replica. Úsese siempre que se deba recrear o auditar el servidor de una aplicación cuyo backend original no está disponible.
+description: Protocolo determinista universal (Cero Adivinación, Multi-Stack, Sincronización de Estado y Paridad DDL) para reconstruir backends completos, esquemas SQL y contratos API a partir de código cliente huérfano (SPA, PWA, React/Vue/Next, Electron ASAR, APK/Capacitor, Sourcemaps) extraído con REA v7.0.0 o Replica. Úsese siempre que se deba recrear o auditar el servidor de una aplicación cuyo backend original no está disponible.
 ---
 
-# 🏛️ Skill: Síntesis Determinista de Backends desde Código Cliente (`backend-reverse-synthesis` v3.0)
+# 🏛️ Skill: Síntesis Determinista Universal de Backends desde Código Cliente (`backend-reverse-synthesis` v4.0)
 
-## 💡 Origen y Por Qué se Creó este Skill
+## 💡 Origen, Evolución y Alcance Universal (Multi-Stack)
 Cuando se utiliza **REA v7.0.0** (`inspect_sourcemap`, `analyze_javascript`, `inspect_capture`, `rea strings`, `inspect_android`) o **Replica** (`replica-recon` / `replica coderecon`) para extraer el código de una aplicación cuyo servidor original no está disponible, se obtiene el 100% de la lógica del cliente.
 
-Sin embargo, en la práctica se identificó un fallo sistémico recurrente: **al recrear el backend reinterpretando el código de forma heurística ("adivinando"), el agente sufre de ceguera estructural y desincronización de estado**. Asume nombres de propiedades JSON que parecen lógicos pero no coinciden con lo que el cliente desestructura, deja bloques `<script type="application/json">` estáticos de la captura original que pisan los cambios guardados al recargar (`#pos-sesion`), implementa *Echo Stubs* (`POST` que responde `{ ok: true }` sin persistir en SQLite y `GET` que devuelve `[]`), usa llaves primarias alfanuméricas (`prd_1`, `cat_1`, `suc_1`) cuando el frontend aplica `Number(dataset.id)` produciendo `NaN === NaN` (`false`), o deja despachadores polimórficos (`?tipo=...`) incompletos.
-
-Este skill nació para **erradicar de raíz los errores de ceguera, adivinación y desincronización en la recreación de backends**, transformando la reconstrucción en un proceso **100% determinista y verificable mediante análisis estático inter-procedural de contratos** donde el código cliente extraído se trata como una especificación formal inmutable.
+Sin embargo, la experiencia empírica demostró que recrear un backend "adivinando" o validando únicamente con pruebas superficiales (`HTTP 200 OK`) fracasa por **4 generaciones de fallos sistémicos**:
+1. **Generación 1 (Ceguera de Contratos)**: Rutas compuestas omitidas (`URL_BASE`), moldes JSON inventados, filtros `.filter()` que descartan registros por falta de llaves foráneas y colisión primitivo vs. objeto.
+2. **Generación 2 (Ceguera Inter-Procedural y MIME)**: Compuertas de permisos vacías (`permisos: {}`) que bloquean módulos enteros, callbacks nombrados (`.then(abrirEditor)`) no rastreados y wrappers de descarga (`.blob()`, `C.descargar`) que rechazan respuestas `application/json`.
+3. **Generación 3 (Desincronización de Estado y Coerción de Tipos)**: Bloques SSR secundarios (`#pos-sesion`, `__NEXT_DATA__`) estáticos que pisan los datos guardados al recargar, *Echo Stubs* (`POST` que responde `ok: true` sin guardar en BD y `GET` con `[]` quemado), llaves primarias de texto (`prd_1`) que producen `NaN === NaN` (`false`) cuando el cliente aplica `Number(id)`, y despachadores polimórficos (`?tipo=...`) incompletos.
+4. **Generación 4 (Asimetría Multi-Stack, Esquema SQL vs. Queries, Archivos Multipart y Efectos Cruzados)**: Consultas SQL que referencian tablas o columnas inexistentes en los `CREATE TABLE` (`ordenes_compra`, `unidad`, `contacto_vendedor`), endpoints `FormData` leídos con `req.json()` que pierden logos/imágenes subidas, rutas duplicadas en el router, asimetría de contratos de error (`200 { ok: false }` vs `4xx/5xx`), desfase de zona horaria (`toISOString()` UTC vs. fecha local), bucles de `401/CSRF` y efectos secundarios no transaccionales entre módulos.
 
 ---
 
-## ⚠️ Los 14 Anti-Patrones de Ceguera, Adivinación y Desincronización (Causas Raíz Prohibidas)
+## 🧭 Principios de Buenas Prácticas Universales en Reimplementación de Backends
+
+### 1. Principio de Inmutabilidad del Cliente (`Client-First Adaptation`)
+- **Regla de Oro**: En clientes compilados, firmados o distribuidos (APKs, binarios Electron/iOS, bundles minificados con SRI), **el código del cliente es inmutable**.
+- Si el cliente aplica `Number(item.dataset.id)`, `parseInt(id, 10)` o aritmética sobre IDs, **el backend reconstruido DEBE definir sus llaves primarias como `INTEGER PRIMARY KEY AUTOINCREMENT`** (o proyectar IDs numéricos en sus serializadores) en lugar de inventar IDs con prefijos de texto (`usr_1`, `prd_1`). Solo se permite normalizar comparaciones `String(a) === String(b)` en el cliente cuando el código fuente del cliente es editable y ya existe una base de datos productiva con UUIDs/prefijos.
+
+### 2. Paridad Estricta DDL $\leftrightarrow$ DML (`Zero Implicit Schema`)
+- Ninguna consulta `SELECT`, `INSERT` o `UPDATE` en el servidor puede referenciar una tabla o columna que no esté explícitamente declarada en el bloque `CREATE TABLE IF NOT EXISTS` o en migraciones idempotentes `ALTER TABLE ... ADD COLUMN` al arranque del servidor.
+
+### 3. Transaccionalidad de Efectos Secundarios Cruzados (`Cross-Module ACID`)
+- Toda operación que afecte más de una entidad de negocio debe ejecutarse dentro de una transacción atómica (`BEGIN IMMEDIATE ... COMMIT` en SQLite, o `db.$transaction` / `with session.begin()`):
+  - **Venta / Cobro**: Insertar factura + insertar renglones + descontar `stock` de productos/variantes + acumular en sesión/turno de caja + registrar en bitácora de actividad.
+  - **Anulación / Devolución**: Marcar venta o renglón como anulado + **restaurar `stock`** + descontar del corte de caja.
+  - **Recepción / Orden de Compra**: Insertar orden + incrementar `stock` + actualizar `precio_compra` y `precio_venta`.
+  - **Baja / Merma**: Descontar `stock` validando disponibilidad previa + insertar registro en historial de bajas.
+
+---
+
+## ⚠️ Los 18 Anti-Patrones Universales Prohibidos (Matriz de Prevención)
 
 | # | Anti-Patrón | Síntoma en el Cliente | Regla Determinista de Prevención |
 | :--- | :--- | :--- | :--- |
-| **1** | **Ceguera de Rutas Dinámicas y Prefijos (`URL_BASE`)** | Rutas de modales secundarios o acciones por fila (`/:id/anular/`, `/eliminar/estado/`) devuelven `404 Not Found`. | Resolver todas las variables prefijo (`URL_BASE`, `apiBase`), ternarios (`sel ? "/a/" + id : "/b/"`) y concatenaciones antes de definir las rutas del router. |
-| **2** | **Adivinación del Molde de Respuesta (`Response Shape Guessing`)** | El servidor devuelve `{ ok: true, data: [...] }`, pero el cliente lee `r.proveedores`, `r.siguiente_codigo`, `d.pedido.numero`, `r.puede_anular` o `r.total`. | Extraer estáticamente todas las lecturas `<param>.<prop>` y `<param>.<prop>.<subprop>` (ej. `limite.sucursales_disponibles`, `categorias[].parent_id`) dentro de cada callback. |
-| **3** | **Descarte Silencioso en Filtros Relacionales (`Silent .filter() Drop`)** | Un `<select>` (ej. Sucursales) aparece vacío sin lanzar errores en consola porque `Number(s.empresa_id) === Number(empresaId)` evalúa `NaN === 23` (`false`). | Extraer todas las expresiones `.filter()` y `.find()` del cliente e inyectar obligatoriamente todas las llaves foráneas (`empresa_id`, `sucursal_id`, `parent_id`, `activa`, `de_recibir`) con el tipo primitivo exacto del bootstrap HTML. |
-| **4** | **Colisión Primitivo vs. Objeto (`Flat Array vs. Entity Object`)** | Un combobox (ej. Roles) se despliega en blanco o con `undefined` porque el servidor envió `["Dueño", "Cajero"]` cuando el cliente itera `r.id`, `r.nombre`, `r.es_dueno_empresa`. | Inspeccionar el renderizador DOM (`.map()`, `dataset.*`, `<option>`) de cada catálogo para verificar si consume escalares u objetos ricos. |
-| **5** | **Asimetría de Transporte y Polimorfismo en `/guardar/`** | Formularios con archivos (`FormData`) fallan al hacer `req.json()`, o el botón "Eliminar" no borra porque envía `{ id, eliminar: true }` al endpoint `/guardar/` en vez de llamar a `/eliminar/`. | Implementar un parser universal (`parseBody`: JSON + Multipart FormData + URLSearchParams) y verificar todas las ramas condicionales (`b.eliminar`, `b.activa`, `b.id`) en los endpoints de guardado. |
-| **6** | **Crash por `INSERT` Ciego Sin `UPSERT`** | Al reintentar guardar un código, rol o usuario existente explota con `500 UNIQUE constraint failed`. | Implementar `UPSERT` (`ON CONFLICT DO UPDATE` o verificación previa de existencia) en toda ruta de creación/guardado. |
-| **7** | **Bloqueo por Compuerta de Permisos Vacía (`Empty Permission Gate Stub: permisos: {}`)** | **Todos los botones de un módulo (ej. `#configuracion`) no hacen nada al hacer clic**, porque el frontend evalúa `if (!estado.permisos[item.clave]) return C.post("/api/configuracion/permiso/", ...)` y el backend devolvió `permisos: {}`. | Extraer todas las claves de permiso del frontend (`config_*`, `modulo_*`) y poblar el diccionario completo con `true` en el estado de sesión/configuración. Prohibido devolver `permisos: {}`. |
-| **8** | **Ceguera por Indirección de Estado (`Indirect State Forwarding & Named Callbacks`)** | El auditor reporta `(sin lectura directa)` en endpoints críticos (`/general/estado/`, `/factura/`, `/eliminar/estado/`) porque el `.then(abrirEditor)` pasa una función nombrada o reenvía el objeto `estado` a submódulos en otros archivos (`V.empresa = function(estado)`). | Resolver inter-proceduralmente tanto las funciones nombradas pasadas a `.then(fnName)` como los consumidores del objeto de estado compartido (`C.estado()`, `V.<modal>(estado)`) en todos los archivos hijos. |
-| **9** | **Inversión Semántica MIME en Descargas (`Download Blob vs. JSON Error Gate`)** | Los botones de "Generar catálogo" o "Descargar plantilla" fallan diciendo *"No se pudo generar el archivo"* aunque el servidor respondió `200 OK`, porque el helper `C.descargar()` interpreta `Content-Type: application/json` como un error de negocio. | Auditar todos los wrappers de descarga (`r.blob()`, `C.descargar`, `Content-Disposition`) y prohibir que sus rutas en el backend devuelvan `c.json()`. Deben retornar `c.body()` con MIME de archivo y cabeceras de metadatos. |
-| **10** | **Botones Huérfanos (`Dead sinPantalla Buttons`)** | Botones con `sinPantalla: true` (`Moneda`, `Cliente por defecto`, `Etiqueta`, `Mi perfil`) muestran un mensaje informativo o abren un modal cuyos cambios no se envían a ningún endpoint. | Todo botón en arreglos de UI o menús del shell debe contar con su ventana interactiva y su ruta `POST` de persistencia conectada. |
-| **11** | **Hidratación SSR Incompleta y Artefactos Estáticos de Captura (`Partial SSR Hydration`)** | Se modifica "Mi empresa" o "Sucursal", el cambio se guarda en SQLite, pero **el menú lateral izquierdo sigue diciendo `"SITIO DE PRUEBA"`** porque `GET /` solo reemplazó `<script id="pos-datos">` y dejó `<script id="pos-sesion">` y los `<span>` del HTML con los textos estáticos de la captura original. | `GET /` debe reemplazar dinámicamente **todos** los bloques `<script id="..." type="application/json">` (`#pos-datos`, `#pos-sesion`, `#pos-modulos`) y los nodos estáticos del shell (`#sidebar-empresa`, `#sidebar-sucursal`, `#sidebar-usuario`, `#sidebar-rol`), y los mutadores del cliente deben sincronizar `P.datos.*` y el DOM en vivo. |
-| **12** | **Mutación Sin Persistencia ("Echo Stubs") y `GET` con Arreglos Vacíos Estáticos** | Guardar un rol, factura pendiente, recepción de producto, categoría de gasto o variante muestra *"Guardado exitosamente"*, pero al volver a abrir la ventana los cambios desaparecen porque el `POST` solo hacía `return c.json({ ok: true })` y el `GET` devolvía `[]` quemado. | **Prohibido** que un endpoint `POST` de negocio carezca de escritura en SQLite (`db.prepare`) o KV (`setKv`), y **prohibido** que un `GET` retorne colecciones vacías literales (`facturas: []`, `codigos: []`, `variantes: []`, `unidades: []`) sin consultar la base de datos. |
-| **13** | **Coerción Numérica de IDs Alfanuméricos (`Number(id)` $\rightarrow$ `NaN === NaN`)** | Hacer clic en una tarjeta de producto en `#inventario`, abrir el árbol de categorías en `#configuracion`, agregar un producto en `#compras` o editar una sucursal/usuario en `#admin_usuario` **no hace absolutamente nada**, porque el backend genera IDs de texto (`prd_1`, `cat_1`, `suc_1`) y el frontend evalúa `Number(item.dataset.id)` o `Number(a.sucursal_id) === Number(s.id)`, lo que produce `NaN === NaN` (`false`). | Si el backend utiliza llaves primarias alfanuméricas, auditar todas las expresiones `Number(*.dataset.id)`, `Number(*.dataset.add)` y `Number(*.id)` del frontend y normalizarlas a comparaciones `String(a) === String(b)`. |
-| **14** | **Despachadores Polimórficos Incompletos (`Incomplete ?tipo= Dispatchers`)** | En el módulo `#reporte`, 4 tarjetas muestran datos pero las otras 14 tarjetas abren tablas vacías (`No hay registros`) porque `GET /api/reportes/?tipo=...` solo implementó un subconjunto de casos y dejó un fallback `filas: []`. | Extraer estáticamente el catálogo completo de subtipos del cliente (`REPORTES` / `CFG` en `reporte.js`) y exigir que cada valor de `tipo` tenga su rama de consulta e hidratación con los nombres de columna exactos de `normalize(id, raw)`. |
+| **1** | **Ceguera de Rutas Dinámicas (`URL_BASE` / Ternarios)** | Acciones por fila o sub-modales devuelven `404 Not Found`. | Resolver constantes prefijo (`URL_BASE`, `apiBase`, `baseURL`), ternarios y concatenaciones antes de definir el router. |
+| **2** | **Adivinación del Molde JSON (`Response Shape Guessing`)** | La vista queda en blanco porque el servidor devuelve `{ data }` y el cliente lee `r.proveedores` o `r.siguiente_codigo`. | Extraer estáticamente todas las lecturas `<param>.<prop>` y `<param>.<prop>.<subprop>` de los callbacks. |
+| **3** | **Descarte Silencioso en `.filter()` (`Silent Filter Drop`)** | Selectores `<select>` o tablas aparecen vacíos sin error en consola porque falta una llave foránea (`empresa_id`, `activa`). | Extraer todos los `.filter()` y `.find()` del cliente e inyectar todas las llaves foráneas con el tipo primitivo exacto del bootstrap. |
+| **4** | **Colisión Primitivo vs. Objeto (`Scalar vs. Object`)** | Comboboxes muestran `undefined` porque el servidor envió `["Dueño"]` en vez de `[{ id, nombre, es_dueno_empresa }]`. | Inspeccionar `.map()`, `dataset.*` y `<option>` en el cliente para verificar si espera escalares u objetos ricos. |
+| **5** | **Polimorfismo de Mutación en `/guardar/`** | El botón "Eliminar" o "Activar/Desactivar" no funciona porque envía `{ id, eliminar: true }` o `{ id, activa: false }` al endpoint de guardado. | Soportar todas las ramas condicionales (`eliminar`, `anular`, `activa`, `activo`, `estado`) dentro de los endpoints de mutación. |
+| **6** | **Crash por `INSERT` Ciego Sin `UPSERT`** | Guardar un registro con código o llave natural existente lanza `500 UNIQUE constraint failed`. | Usar `ON CONFLICT DO UPDATE` o verificar existencia previa antes de insertar. |
+| **7** | **Compuerta de Permisos / Feature Flags Vacía (`permisos: {}`)** | **Todos los botones de un módulo no hacen nada**, porque `!estado.permisos[clave]` desvía el flujo. | Extraer todas las claves (`config_*`, `perm_*`, `can_*`, `permissions`, `abilities`) y poblarlas en `true` para el rol administrador. |
+| **8** | **Ceguera Inter-Procedural (`.then(fnNombrada)` y Estado Compartido)** | El auditor reporta `(sin lectura directa)` porque el callback es una función nombrada o pasa el estado a otros archivos. | Resolver cuerpos de funciones nombradas y rastrear consumidores del estado compartido (`C.estado()`, stores de Redux/Zustand/Pinia). |
+| **9** | **Inversión Semántica MIME en Descargas (`.blob()`, `C.descargar`)** | Descargar PDF/CSV/XLSX/Backup lanza error aunque responda `200 OK`, porque el cliente rechaza `application/json`. | Rutas de descarga deben responder con `c.body()` / `StreamingResponse` (`text/csv`, `application/pdf`, `application/octet-stream`) y `Content-Disposition`. |
+| **10** | **Botones o Acciones Huérfanas (`Dead UI Actions`)** | Botones de configuración o perfil (`Mi perfil`, `Moneda`) no abren modal o no llaman a ningún endpoint al guardar. | Verificar que cada acción de UI esté conectada a su modal y a un endpoint `POST` real. |
+| **11** | **Hidratación SSR Incompleta (`Partial SSR Hydration`)** | Se guarda un cambio en BD, pero al recargar o mirar el header/sidebar sigue apareciendo `"SITIO DE PRUEBA"`. | Inyectar dinámicamente **todos** los bloques `<script type="application/json">` (`#pos-datos`, `#pos-sesion`, `#pos-modulos`, `__NEXT_DATA__`) y nodos del shell en `GET /`. |
+| **12** | **Echo Stubs Sin Persistencia (`Stateless POST & Empty GET`)** | Guardar dice *"Éxito"*, pero al reabrir la ventana la lista vuelve a estar vacía (`[]`). | Prohibido que un `POST` carezca de escritura en BD/KV o que un `GET` retorne colecciones vacías literales (`facturas: []`, `codigos: []`, `variantes: []`). |
+| **13** | **Coerción Numérica de IDs Alfanuméricos (`Number(id)` $\rightarrow$ `NaN === NaN`)** | Clics en tarjetas de productos, categorías o usuarios no hacen nada porque `Number("prd_1") === Number("prd_1")` es `false`. | Usar PKs enteras en el backend si el cliente aplica `Number(id)` (preferido), o normalizar comparaciones a `String(a) === String(b)`. |
+| **14** | **Despachadores Polimórficos Incompletos (`?tipo=...`, `?action=...`)** | 4 reportes muestran datos y 14 salen en blanco porque el servidor tiene un fallback genérico `filas: []`. | Extraer todos los valores del catálogo polimórfico del cliente e implementar cada rama con las propiedades exactas de su normalizador. |
+| **15** | **Desfase Esquema SQL vs. Consultas (`Schema-to-Query Drift`)** | Endpoints que pasan pruebas básicas explotan en producción con `SQLiteError: no such table` o `no such column`. | Auditar estáticamente que toda tabla y columna usada en `SELECT`/`INSERT`/`UPDATE` exista en `CREATE TABLE` o `ALTER TABLE`. |
+| **16** | **Sombreado de Rutas Duplicadas (`Duplicate Route Shadowing`)** | Un endpoint devuelve datos viejos o incompletos porque una definición temprana de la misma ruta en el archivo sombrea la nueva. | Auditar que cada par `(MÉTODO, ruta_normalizada)` se registre una única vez en el servidor. |
+| **17** | **Asimetría Multipart/FormData y Pérdida de Archivos (`File/Media Drop`)** | Subir un logo, avatar, imagen de producto o CSV falla o se ignora porque el servidor usa `req.json()` o descarta el `File`/DataURL. | Usar un parser universal (`parseBody`: JSON + Multipart + URLSearchParams), convertir o servir archivos subidos (`data:` URL o `/uploads/`) y persistirlos en BD. |
+| **18** | **Asimetría de Errores, Paginación, Auth/CSRF y Zona Horaria (`Protocol & Temporal Drift`)** | Errores 400 rompen clientes que esperan `200 { ok: false }` (o viceversa); tablas paginadas dicen `NaN`; o ventas nocturnas pasan al día siguiente por usar UTC (`toISOString()`). | Alinear el formato de error al wrapper HTTP del cliente, proveer metadatos de paginación (`count`, `results`, `total`), configurar cookies/CORS/CSRF y usar hora local del negocio en cortes diarios. |
 
 ---
 
-## 🛠️ Herramienta Integrada de Auditoría Determinista v3.0
+## 🛠️ Herramienta Integrada de Auditoría Determinista Universal v4.0
 
-Este skill incluye el analizador estático inter-procedural ejecutable:
+Ejecuta el analizador estático multi-stack antes de dar por completado cualquier backend:
 ```bash
 python3 /Users/edward/.gemini/config/skills/backend-reverse-synthesis/scripts/audit_api_contracts.py \
   --frontend <ruta_codigo_cliente_extraido> \
   --server <ruta_archivo_o_directorio_servidor>
 ```
 
-### ¿Qué verifica `audit_api_contracts.py` v3.0?
-1. Escanea recursivamente todos los archivos `.js/.ts/.jsx/.tsx/.vue/.svelte` y `.html` del cliente extraído.
-2. Resuelve constantes `URL_BASE`, llamadas relativas y concatenaciones dinámicas.
-3. **Resolución Inter-procedural**:
-   - Si un endpoint usa `.then(nombreFuncion)`, localiza `function nombreFuncion(param)` en el archivo y extrae todas las propiedades leídas sobre `param`.
-   - Si un endpoint alimenta un estado compartido (`C.estado()`), rastrea todos los submódulos (`V.<id> = function(estado)`) en archivos hermanos y vincula todas las propiedades leídas al endpoint origen.
-4. **Extracción de 2º Nivel e Iteradores**: Extrae tanto `param.prop.subprop` (`limite.sucursales_disponibles`) como propiedades de elementos dentro de `.map()` / `.filter()` (`categorias[].parent_id`, `tablas[].descripcion`).
-5. **Auditoría de Compuertas de Permisos (Anti-Patrón #7)**: Extrae todas las claves `config_*` del frontend y **falla con código `1`** si alguna clave falta en el código del servidor.
-6. **Auditoría de Descargas `[DOWNLOAD]` (Anti-Patrón #9)**: Detecta rutas invocadas mediante `C.descargar()` / `window.location.href` y **falla con código `1`** si el servidor responde con `c.json()` en lugar de `c.body()`.
-7. **Auditoría de Botones Huérfanos (Anti-Patrón #10)**: Detecta botones definidos con `sinPantalla: true` que carezcan de ventana registrada en `ConfigVentanas`.
-8. **[NUEVO v3.0] Auditoría de Hidratación SSR Completa (Anti-Patrón #11)**: Extrae todos los `<script id="..." type="application/json">` de los archivos `.html` y **falla con código `1`** si alguno no es reemplazado dinámicamente en el servidor (`GET /`).
-9. **[NUEVO v3.0] Detección de Echo Stubs Sin Persistencia (Anti-Patrón #12)**: Analiza el cuerpo de cada `app.post(...)` y `app.get(...)` en el servidor y **falla con código `1`** si algún `POST` no persiste en SQLite (`db.prepare`) o KV (`setKv`), o si algún `GET` devuelve arreglos vacíos quemados (`variantes: []`, `codigos: []`, `facturas: []`, `unidades: []`).
-10. **[NUEVO v3.0] Detección de Coerción Numérica sobre IDs Alfanuméricos (Anti-Patrón #13)**: Si el servidor emplea IDs con prefijos de texto (`prd_`, `cat_`, `suc_`, `usr_`), escanea todo el frontend buscando `Number(*.dataset.id)`, `Number(*.dataset.add)` o `Number(*.sucursal_id) === Number(*.id)` y **falla con código `1`** indicando archivo y línea exacta.
-11. **[NUEVO v3.0] Auditoría de Despachadores Polimórficos `?tipo=...` (Anti-Patrón #14)**: Extrae los 18 subtipos de `REPORTES` en `reporte.js` y **falla con código `1`** si alguno no está implementado explícitamente en `GET /api/reportes/`.
+### ¿Qué verifica automáticamente `audit_api_contracts.py` v4.0?
+1. **Cobertura de Rutas y Métodos (Multi-Stack)**: Soporta `fetch`, `axios`, `C.get/post/postForm/descargar`, `P.api`, `URL_BASE` en el cliente, y Hono/Express/Fastify/FastAPI/Flask en el servidor.
+2. **Propiedades de 1er/2do Nivel, Iteradores e Indirección Inter-Procedural**: Rastrea `.then(fnNombrada)` y estado compartido entre múltiples archivos (`C.estado()`, `V.<modal>`).
+3. **Compuertas de Permisos (`config_*`, `perm_*`, `can_*`)**: Falla si alguna clave de permiso del cliente no está declarada en el servidor.
+4. **Rutas `[DOWNLOAD]` y `[MULTIPART]`**:
+   - Falla si una ruta `[DOWNLOAD]` devuelve solo `c.json()` sin `c.body()`.
+   - Falla si una ruta `[MULTIPART]` (que recibe `FormData` con archivos/campos) usa `req.json()` puro en lugar de `parseBody()`.
+5. **Hidratación SSR Completa**: Verifica que todos los bloques `<script id="..." type="application/json">` del HTML sean inyectados dinámicamente.
+6. **Cero Echo Stubs**: Falla si un endpoint `POST` no invoca primitivas de persistencia (`db.prepare`, `setKv`, `prisma.`, `knex`, `pool.query`, `cursor.execute`, `session.add`, `.save()`) o si un `GET` devuelve arreglos vacíos quemados.
+7. **Detección de `NaN === NaN` en IDs**: Falla si el servidor usa PKs alfanuméricas y el cliente aplica `Number(dataset.id)` o `Number(x.id) === Number(y.id)`.
+8. **Paridad DDL $\leftrightarrow$ SQL (Regla #15)**: Extrae todas las tablas y columnas de `CREATE TABLE` y `ALTER TABLE` y **falla con código `1`** si alguna consulta SQL referencia una tabla o columna inexistente.
+9. **Detección de Rutas Duplicadas (Regla #16)**: Falla si una misma ruta y método HTTP está registrada más de una vez en el servidor.
+10. **Cobertura Polimórfica `?tipo=...` (Regla #14)**: Verifica que todos los subtipos de reportes/catálogos estén implementados.
 
 ---
 
-## 📋 Protocolo de Ejecución en 6 Fases (Paso a Paso)
+## 📋 Protocolo Operativo en 7 Fases para Cualquier Reconstrucción de Backend
 
-### Fase 1: Auditoría de Hidratación SSR y Artefactos de Captura (`index.html`)
-1. Enumerar **todos** los bloques `<script id="..." type="application/json">` en `index.html` (`#pos-datos`, `#pos-sesion`, `#pos-modulos`) y todos los nodos DOM con datos de sesión quemados en la captura (`#sidebar-empresa`, `#sidebar-sucursal`, `#sidebar-usuario`, `#sidebar-rol`).
-2. Asegurar que `GET /` reemplace **todos** los bloques JSON y nodos del shell desde SQLite, y que `obtenerPosDatos()` no contenga colecciones estáticas quemadas (categorías, usuarios, sucursales, gastos, recepciones, promociones).
-
-### Fase 2: Normalización de Tipos de Llaves Primarias (`String(id)` vs `Number(id)`)
-1. Verificar si las tablas SQLite usan IDs enteros o alfanuméricos (`prd_...`, `cat_...`, `suc_...`).
-2. Si existen IDs alfanuméricos, barrer todas las vistas del cliente para reemplazar `Number(el.dataset.id)` y `Number(x.id) === Number(y.id)` por `String(...) === String(...)`.
-
-### Fase 3: Extracción Determinista del Mapa de Contratos y Despachadores Polimórficos (v3.0)
-1. Ejecutar `audit_api_contracts.py` v3.0 apuntando al directorio del frontend y al servidor.
-2. Verificar tanto las propiedades directas/indirectas de cada ruta como todos los subtipos de endpoints polimórficos (`?tipo=...`) y sus normalizadores en el cliente (`normalize(id, raw)`).
-
-### Fase 4: Eliminación Total de Echo Stubs y Sincronización Cruzada entre Módulos
-1. Todo endpoint `POST` debe persistir en tablas SQLite o en `configuracion_kv`, y su correspondiente `GET` debe leer de la misma fuente.
-2. Cuando un módulo modifica configuración compartida (ej. `Editar factura` guarda `factura_config`, `Categorías` modifica `categorias`, `Mi empresa` modifica `empresa`), el endpoint consumidor en otros módulos (`GET /api/configuracion/factura/venta/:id/` en `#caja`, `P.datos.categorias` en `#inventario`, `P.datos.sesion` en el shell) debe recibir los datos actualizados en vivo.
-
-### Fase 5: Verificación de Interactividad UI (Cero Botones Muertos)
-1. Inspeccionar todos los arreglos de botones/acciones de la interfaz (`COLUMNAS` en `configuracion.js`, menú de usuario `#accion-perfil` en `shell.js`) y asegurar que cada acción abra su modal y persista sus cambios en el servidor.
-
-### Fase 6: Gate de Calidad Doble (Estático v3.0 + Aserción de Roundtrip en Vivo)
-1. **Gate Estático**: `audit_api_contracts.py` v3.0 debe reportar `100.0%` de cobertura de rutas y `0 violaciones estructurales`.
-2. **Gate Dinámico (`test_pos_api.sh`)**: Debe probar ciclos completos `POST` (guardar) $\rightarrow$ `GET` (verificar persistencia real), hidratación SSR completa (`#pos-datos`, `#pos-sesion`, `#pos-modulos`, `#sidebar-*`), descargas binarias no-JSON y los 18 subtipos de reportes.
-3. Incrementar siempre `VERSION` en `sw.js` y los query strings `?v=...` en `index.html` al desplegar.
+1. **Fase 1 — Reconocimiento de Transporte, Errores, Auth y Bootstrap SSR**:
+   - Inspeccionar el wrapper HTTP central del cliente (`fetch`/`axios` interceptor) para determinar:
+     - Prefijo de rutas (`/api/`, `/v1/`), cabeceras de autenticación (`Cookie`, `Authorization: Bearer`, `X-CSRFToken`) y manejo de errores (`HTTP 200 { ok: false, error }` vs `HTTP 4xx { detail, message }`).
+     - Bloques de hidratación inicial en HTML (`<script type="application/json">`, `window.__INITIAL_STATE__`) y estrategia de caché en Service Worker (`sw.js`).
+2. **Fase 2 — Diseño del Esquema DDL Canónico y Estrategia de Primary Keys**:
+   - Si el cliente usa `Number(id)` o `parseInt(id)`, diseñar tablas con `INTEGER PRIMARY KEY AUTOINCREMENT`. Si usa UUIDs o strings, asegurar comparaciones `String(a) === String(b)`.
+   - Declarar todas las tablas y columnas requeridas en `CREATE TABLE IF NOT EXISTS` + migraciones aditivas `ALTER TABLE ... ADD COLUMN`.
+3. **Fase 3 — Ejecución del Auditor Estático `audit_api_contracts.py` v4.0**:
+   - Extraer el mapa completo de rutas, propiedades de 1er/2do nivel, rutas `[DOWNLOAD]`, rutas `[MULTIPART]`, permisos y despachadores `?tipo=`.
+4. **Fase 4 — Implementación de Serializadores, Archivos Multipart y Transacciones Cruzadas**:
+   - Implementar un parser universal `parseBody(c)` (JSON + Multipart FormData + URLSearchParams) y soporte de archivos/imágenes (`fileToDataUrl` o directorio estático `/uploads/`).
+   - Envolver operaciones compuestas (Ventas + Stock + Turno; Compras + Stock; Anulaciones + Devolución de Stock) en transacciones atómicas.
+5. **Fase 5 — Sincronización de Estado Reactivo (BD $\leftrightarrow$ SSR $\leftrightarrow$ Memoria SPA $\leftrightarrow$ DOM)**:
+   - Asegurar que toda mutación en configuración, perfil, sucursales, categorías o catálogos actualice tanto la BD como el objeto global en memoria del cliente y los nodos visibles del shell.
+6. **Fase 6 — Gate Estático v4.0 (`0 violaciones estructurales`)**:
+   - Ejecutar `audit_api_contracts.py` v4.0 hasta obtener `100.0%` de cobertura de rutas y `0 violaciones estructurales` (DDL SQL, Multipart, SSR, Persistencia, IDs, Permisos y Reportes).
+7. **Fase 7 — Gate Dinámico E2E de Roundtrip (`POST -> GET`) y Cache Busting**:
+   - Ejecutar pruebas automatizadas contra el servidor en vivo verificando que cada `POST` persista datos reales observables en el siguiente `GET`, que las descargas devuelvan MIME binario/CSV y que la versión del Service Worker (`sw.js`) haya sido incrementada.
