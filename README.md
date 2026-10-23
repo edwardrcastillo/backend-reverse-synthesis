@@ -1,14 +1,14 @@
-# 🏛️ Backend Reverse Synthesis (`backend-reverse-synthesis` v2.0)
+# 🏛️ Backend Reverse Synthesis (`backend-reverse-synthesis` v3.0)
 
-> **Protocolo determinista e inter-procedural (Cero Adivinación / Cero Ceguera) para la recreación de backends a partir de código cliente extraído con REA v7.0.0 y REPLICA.**
+> **Protocolo determinista, inter-procedural y de sincronización de estado (Cero Adivinación / Cero Ceguera / Cero Desincronización) para la recreación de backends a partir de código cliente extraído con REA v7.0.0 y REPLICA.**
 
 ---
 
-## 💡 ¿Por Qué se Creó este Skill y Cómo Evolucionó a v2.0?
+## 💡 ¿Por Qué se Creó este Skill y Cómo Evolucionó a v3.0?
 
 Cuando auditamos, rescatamos o reconstruimos aplicaciones cuyo servidor original ya no existe o es inaccesible, herramientas como **REA v7.0.0** (`inspect_sourcemap`, `analyze_javascript` sobre Electron `.asar`, `rea strings`, `inspect_android`, `inspect_capture`) y **REPLICA** (`replica-recon` / `replica coderecon`) nos permiten recuperar el código del cliente (SPA, PWA, bundles JS, aplicaciones móviles o de escritorio).
 
-Sin embargo, durante la reconstrucción real de un sistema POS completo a partir de su frontend extraído, quedaron en evidencia **dos generaciones de defectos críticos** cuando un agente intenta recrear un backend:
+Sin embargo, durante la reconstrucción real de un sistema POS completo a partir de su frontend extraído, quedaron en evidencia **tres generaciones de defectos críticos** cuando un agente intenta recrear un backend:
 
 ### ❌ Generación 1: La Trampa de "Reinterpretar y Adivinar" (Resuelta en v1.0)
 1. **Ceguera de Rutas Compuestas**: Ve las rutas estáticas obvias (`/api/clientes/`), pero ignora rutas construidas dinámicamente mediante prefijos (`URL_BASE + "estado/"`), operadores ternarios o concatenación de IDs (`"/api/ventas/" + v.id + "/productos/" + p.id + "/anular/"`).
@@ -21,7 +21,14 @@ Incluso con el 100% de las rutas creadas y respondiendo `HTTP 200`, la primera v
 1. **Compuertas de Permisos Vacías (`permisos: {}`)**: El despachador `abrir(item)` evaluaba `if (!estado.permisos[item.clave]) return C.post("/api/configuracion/permiso/", ...)`. Al devolver `permisos: {}` y `200 OK` en `/permiso/`, los **16 botones del módulo no hacían absolutamente nada al hacer clic**.
 2. **Indirección de Promesas y Estado Compartido**: El auditor v1.0 solo leía `.then(function(d) { ... })` anónimos inline, reportando `(sin lectura directa)` cuando el frontend usaba callbacks nombrados (`.then(abrirEditor)`, `.then(abrirVentana)`) o cuando guardaba `C._estado = d` y lo pasaba a submódulos en otros archivos (`V.empresa = function(estado)`), ocultando sub-propiedades de 2do nivel (`limite.sucursales_disponibles`, `categorias[].parent_id`, `categorias[].ruta`).
 3. **Inversión Semántica MIME en Descargas (`C.descargar`)**: El wrapper `C.descargar()` verifica `if (!r.ok || tipo.indexOf("application/json") >= 0) throw Error(...)`. Devolver `200 OK` con `c.json({ ok: true })` pasaba un test básico de código HTTP, pero el cliente lo interpretaba como un fallo de negocio por ser JSON en lugar de un archivo descargable (`text/csv`, `text/html`, `application/octet-stream`).
-4. **Botones Huérfanos (`sinPantalla: true`) y Stubs Sin Persistencia**: Botones marcados con `sinPantalla: true` (`Moneda`, `Cliente por defecto`, `Etiqueta`) o endpoints `POST` que no persistían en SQLite daban la ilusión de que la interfaz estaba rota.
+4. **Botones Huérfanos (`sinPantalla: true`)**: Botones marcados con `sinPantalla: true` (`Moneda`, `Cliente por defecto`, `Etiqueta`) carecían de handler en `P.ConfigVentanas`.
+
+### ❌ Generación 3: Desincronización SSR/SPA, Echo Stubs, Coerción `Number(id)` y Reportes Polimórficos (Resuelta en v3.0)
+Al probar cambios de extremo a extremo entre módulos, se descubrieron cuatro patrones estructurales adicionales:
+1. **Hidratación SSR Incompleta (`#pos-datos` vs `#pos-sesion`)**: El usuario cambiaba el nombre de la empresa en `#configuracion -> Mi empresa`, se guardaba en SQLite, pero **el menú izquierdo seguía mostrando `"SITIO DE PRUEBA"`** porque `GET /` solo reemplazaba `<script id="pos-datos">` y dejaba `<script id="pos-sesion">` estático de la captura original (que `nucleo/utilidades.js` lee después, pisando `datos.sesion`).
+2. **Echo Stubs Sin Persistencia (`POST` que finge guardar y `GET` con `[]` quemado)**: Endpoints como `/api/configuracion/roles/guardar/`, `/api/caja/pendientes/`, `/api/recibir/registrar/`, `/api/gastos/categorias/` o `/api/inventario/productos/:id/variantes/` respondían `{ ok: true }` sin escribir en SQLite ni `configuracion_kv`, mientras sus `GET` devolvían arreglos vacíos fijos.
+3. **Coerción Numérica sobre Llaves Primarias Alfanuméricas (`Number(id)` $\rightarrow$ `NaN === NaN`)**: El backend generaba IDs de texto (`prd_...`, `cat_...`, `suc_...`, `usr_...`), mientras que `inventario.js`, `selector_categoria.js`, `compras.js`, `usuario.js` y `admin_usuario.js` ejecutaban `Number(item.dataset.id)` o `Number(a.sucursal_id) === Number(s.id)`, evaluando `NaN === NaN` (`false`) y rompiendo silenciosamente la selección de tarjetas y categorías.
+4. **Despachadores Polimórficos Incompletos (`?tipo=...`)**: `GET /api/reportes/` solo atendía 4 de los 18 subtipos definidos en `REPORTES` (`reporte.js`), devolviendo `filas: []` en los 14 restantes.
 
 ---
 
@@ -29,17 +36,17 @@ Incluso con el 100% de las rutas creadas y respondiendo `HTTP 200`, la primera v
 
 ```text
 backend-reverse-synthesis/
-├── SKILL.md                         # Instrucciones operativas v2.0 del Skill (10 Anti-Patrones + 5 Fases)
-├── README.md                        # Documentación general y guía rápida
+├── SKILL.md                         # Instrucciones operativas v3.0 del Skill (14 Anti-Patrones + 6 Fases)
+├── README.md                        # Documentación general y guía rápida v3.0
 ├── docs/
-│   └── ORIGEN_Y_CASO_DE_ESTUDIO.md  # Análisis forense detallado de los Casos A–H que dieron origen al Skill
+│   └── ORIGEN_Y_CASO_DE_ESTUDIO.md  # Análisis forense detallado de los Casos de Estudio reales
 └── scripts/
-    └── audit_api_contracts.py       # Auditor estático inter-procedural v2.0 (Frontend vs. Backend)
+    └── audit_api_contracts.py       # Auditor estático inter-procedural v3.0 (Frontend vs. Backend)
 ```
 
 ---
 
-## 🚀 Uso Rápido del Auditor Determinista v2.0
+## 🚀 Uso Rápido del Auditor Determinista v3.0
 
 ```bash
 python3 scripts/audit_api_contracts.py \
@@ -47,28 +54,21 @@ python3 scripts/audit_api_contracts.py \
   --server /ruta/al/servidor/reconstruido.js
 ```
 
-### Ejemplo de Salida Real v2.0 (100% Paridad Determinista)
+### Ejemplo de Salida Real v3.0 (100% Paridad Determinista)
 ```text
 ==========================================================================================
-🔬 AUDITORÍA DETERMINISTA DE CONTRATOS API v2.0 (ZERO-GUESSING PROTOCOL)
+🔬 AUDITORÍA DETERMINISTA DE CONTRATOS API v3.0 (ZERO-GUESSING & STATE-SYNC PROTOCOL)
 ==========================================================================================
-Rutas API únicas en Frontend       : 78
-Rutas API registradas en Servidor  : 90
+Rutas API únicas en Frontend       : 79
+Rutas API registradas en Servidor  : 91
 Claves de Permiso (config_*)       : 18 detectadas
 Rutas de Descarga Binaria/Archivo  : 4 detectadas
+Bloques SSR JSON (<script>)        : 3 detectados (pos-datos, pos-modulos, pos-sesion)
+Subtipos Polimórficos (?tipo=...)  : 18 detectados en reportes
 ------------------------------------------------------------------------------------------
-  [OK]      ALL      /api/configuracion/catalogo/generar/ [DOWNLOAD]  | Props: nombre, total | configuracion_general.js:467
-  [OK]      GET      /api/configuracion/eliminar/estado/              | Props: compartidas_empresa, modo, tablas, tablas[].descripcion, tablas[].icono, tablas[].nombre, tablas[].tabla | configuracion_eliminar.js:79
-  [OK]      GET      /api/configuracion/factura/                      | Props: config, sucursales | configuracion_ventas.js:349
-  [OK]      GET      /api/configuracion/general/estado/               | Props: categorias, categorias[].parent_id, empresa, empresa.nombre, es_dueno, limite, limite.max_sucursales, limite.sucursales_disponibles, limite.sucursales_usadas, permisos, sucursal_sesion, sucursales, tipos_identificacion | configuracion.js:96
 ...
 ------------------------------------------------------------------------------------------
-📊 Cobertura de Rutas: 78/78 (100.0%)
+📊 Cobertura de Rutas: 79/79 (100.0%)
 
-🏆 PARIDAD DETERMINISTA AL 100%: Rutas, propiedades anidadas, permisos, descargas y botones verificados.
+🏆 PARIDAD DETERMINISTA v3.0 AL 100%: Rutas, SSR, persistencia SQL/KV, IDs alfanuméricos, permisos y reportes verificados.
 ```
-
----
-
-## 📄 Documentación Adicional
-Consulta [`docs/ORIGEN_Y_CASO_DE_ESTUDIO.md`](docs/ORIGEN_Y_CASO_DE_ESTUDIO.md) para ver el desglose técnico completo de los casos de estudio reales (Casos A–H) y cómo este protocolo v2.0 los previene de forma determinista.
